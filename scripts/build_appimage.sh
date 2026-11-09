@@ -9,7 +9,7 @@ DIST_DIR="dist"
 
 MKVMERGE_BIN=$(command -v mkvmerge || true)
 if [ -z "${MKVMERGE_BIN}" ]; then
-    echo "Erreur: mkvmerge introuvable sur le systeme. Lance: sudo dnf install -y mkvtoolnix"
+    echo "Error: mkvmerge not found on system. Run: sudo dnf install -y mkvtoolnix"
     exit 1
 fi
 
@@ -19,6 +19,11 @@ mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/lib" "${DIST_DIR}"
 cp "${TARGET_BIN}" "${APPDIR}/usr/bin/${APP}"
 cp "${MKVMERGE_BIN}" "${APPDIR}/usr/bin/mkvmerge"
 chmod +x "${APPDIR}/usr/bin/${APP}" "${APPDIR}/usr/bin/mkvmerge"
+
+# Copie de l'icone PNG dans l'AppDir
+if [ -f "assets/animerger.png" ]; then
+    cp "assets/animerger.png" "${APPDIR}/${APP}.png"
+fi
 
 ldd "${MKVMERGE_BIN}" | awk '/=> \// {print $3}' | while read -r lib; do
     base=$(basename "${lib}")
@@ -51,16 +56,9 @@ Categories=AudioVideo;Video;
 Terminal=false
 EOF
 
-cat > "${APPDIR}/${APP}.svg" << 'EOF'
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="48" fill="#1e1b4b"/>
-  <path d="M64 80 L128 144 L192 80 M128 144 L128 200" stroke="#818cf8" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-</svg>
-EOF
-
 if ! command -v appimagetool >/dev/null 2>&1; then
     if [ ! -f build/appimagetool ]; then
-        echo "Telechargement de appimagetool..."
+        echo "Downloading appimagetool..."
         curl -fsSL -o build/appimagetool \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
         chmod +x build/appimagetool
@@ -71,4 +69,4 @@ else
 fi
 
 ARCH=${ARCH} ${APPIMAGETOOL} "${APPDIR}" "${DIST_DIR}/${APP}-${ARCH}.AppImage"
-echo "AppImage autonome cree : ${DIST_DIR}/${APP}-${ARCH}.AppImage"
+echo "Standalone AppImage created: ${DIST_DIR}/${APP}-${ARCH}.AppImage"
