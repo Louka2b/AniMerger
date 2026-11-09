@@ -16,6 +16,9 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const EMBEDDED_MKVMERGE: &[u8] = include_bytes!("../build/win/mkvmerge.exe");
 
+#[cfg(target_os = "windows")]
+const EMBEDDED_ALASS: &[u8] = include_bytes!("../build/win/alass.exe");
+
 #[derive(Clone, Debug)]
 struct EpisodePair {
     enabled: bool,
@@ -45,6 +48,9 @@ struct TrackConfig {
     lang_subs_default: bool,
     lang_chapters: bool,
     lang_attachments: bool,
+    
+    verify_integrity: bool,
+    auto_sync_subs: bool,
 }
 
 impl Default for TrackConfig {
@@ -67,6 +73,9 @@ impl Default for TrackConfig {
             lang_subs_default: true,
             lang_chapters: false,
             lang_attachments: true,
+
+            verify_integrity: true,
+            auto_sync_subs: false,
         }
     }
 }
@@ -151,6 +160,53 @@ fn resolve_bundled_mkvmerge() -> String {
             }
         }
         "mkvmerge".to_string()
+    }
+}
+
+fn resolve_bundled_alass() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let target = std::env::temp_dir().join("animerger_embedded_alass.exe");
+        let needs_write = match fs::metadata(&target) {
+            Ok(meta) => meta.len() != EMBEDDED_ALASS.len() as u64,
+            Err(_) => true,
+        };
+        if needs_write {
+            let _ = fs::write(&target, EMBEDDED_ALASS);
+        }
+        return target.to_string_lossy().to_string();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(parent) = exe_path.parent() {
+                let bundled = parent.join("alass");
+                if bundled.exists() {
+                    return bundled.to_string_lossy().to_string();
+                }
+            }
+        }
+        let brew_path = Path::new("/opt/homebrew/bin/alass");
+        if brew_path.exists() {
+            return brew_path.to_string_lossy().to_string();
+        }
+        let intel_brew_path = Path::new("/usr/local/bin/alass");
+        if intel_brew_path.exists() {
+            return intel_brew_path.to_string_lossy().to_string();
+        }
+        "alass".to_string()
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        if let Ok(appdir) = std::env::var("APPDIR") {
+            let bundled = Path::new(&appdir).join("usr/bin/alass");
+            if bundled.exists() {
+                return bundled.to_string_lossy().to_string();
+            }
+        }
+        "alass".to_string()
     }
 }
 
@@ -397,6 +453,7 @@ impl AniMergerApp {
     fn build_mkvmerge_args(
         cfg: &TrackConfig,
         pair: &EpisodePair,
+        active_lang_path: &Path,
         out_dir: &str,
         mode: OutputNamingMode,
         custom_name: &str,
@@ -493,7 +550,7 @@ impl AniMergerApp {
             args.push("--sync".into());
             args.push(format!("-1:{}", pair.delay_ms));
         }
-        args.push(pair.lang_path.to_string_lossy().to_string());
+        args.push(active_lang_path.to_string_lossy().to_string());
 
         (out_file, args)
     }
@@ -548,8 +605,51 @@ impl AniMergerApp {
                     ),
                 ));
 
+                let mut active_lang_path = pair.lang_path.clone();
+                let temp_synced_sub = std::env::temp_dir().join(format!("synced_{}.srt", pair.ep_key));
+
+                if cfg.auto_sync_subs {
+                    let alass_bin = resolve_bundled_alass();
+                    let _ = tx.send(WorkerMsg::Log(format!(
+                        "[{}] Running Alass subtitle synchronization...",
+                        pair.ep_key
+                    )));
+
+                    let mut alass_cmd = Command::new(&alass_bin);
+                    alass_cmd.arg(&pair.hq_path)
+                             .arg(&pair.lang_path)
+                             .arg(&temp_synced_sub);
+
+                    #[cfg(target_os = "windows")]
+                    alass_cmd.creation_flags(0x08000000);
+
+                    match alass_cmd.output() {
+                        Ok(output) => {
+                            if output.status.success() && temp_synced_sub.exists() {
+                                active_lang_path = temp_synced_sub.clone();
+                                let _ = tx.send(WorkerMsg::Log(format!(
+                                    "[{}] Alass sync completed successfully.",
+                                    pair.ep_key
+                                )));
+                            } else {
+                                let err_msg = String::from_utf8_lossy(&output.stderr);
+                                let _ = tx.send(WorkerMsg::Log(format!(
+                                    "[{}] Alass warning/error (falling back to original): {}",
+                                    pair.ep_key, err_msg
+                                )));
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(WorkerMsg::Log(format!(
+                                    "[{}] Failed to execute Alass binary ({}): {}. Skipping sync.",
+                                    pair.ep_key, alass_bin, e
+                            )));
+                        }
+                    }
+                }
+
                 let (out_file, args) =
-                    Self::build_mkvmerge_args(&cfg, &pair, &out_dir, mode, &custom_name);
+                    Self::build_mkvmerge_args(&cfg, &pair, &active_lang_path, &out_dir, mode, &custom_name);
 
                 let _ = tx.send(WorkerMsg::Log(format!(
                     "[{}] Running: {} {}",
@@ -602,30 +702,31 @@ impl AniMergerApp {
                             Ok(status) => {
                                 let code = status.code().unwrap_or(2);
                                 if code == 0 || code == 1 {
-                                    // Validation d'intégrité post-mux avec mkvmerge --identify
-                                    let mut verify_cmd = Command::new(&bin);
-                                    verify_cmd.arg("--identify").arg(&out_file);
-                                    
-                                    match verify_cmd.output() {
-                                        Ok(out) => {
-                                            let stdout_str = String::from_utf8_lossy(&out.stdout);
-                                            if stdout_str.contains("Track ID") {
+                                    if cfg.verify_integrity {
+                                        let mut verify_cmd = Command::new(&bin);
+                                        verify_cmd.arg("--identify").arg(&out_file);
+                                        
+                                        match verify_cmd.output() {
+                                            Ok(out) => {
+                                                let stdout_str = String::from_utf8_lossy(&out.stdout);
+                                                if stdout_str.contains("Track ID") {
+                                                    let _ = tx.send(WorkerMsg::Log(format!(
+                                                        "[{}] Integrity check passed.",
+                                                        pair.ep_key
+                                                    )));
+                                                } else {
+                                                    let _ = tx.send(WorkerMsg::Log(format!(
+                                                        "[{}] Warning: Integrity check response unusual.",
+                                                        pair.ep_key
+                                                    )));
+                                                }
+                                            }
+                                            Err(e) => {
                                                 let _ = tx.send(WorkerMsg::Log(format!(
-                                                    "[{}] Integrity check passed.",
-                                                    pair.ep_key
-                                                )));
-                                            } else {
-                                                let _ = tx.send(WorkerMsg::Log(format!(
-                                                    "[{}] Warning: Integrity check response unusual.",
-                                                    pair.ep_key
+                                                    "[{}] Integrity check execution failed: {}",
+                                                    pair.ep_key, e
                                                 )));
                                             }
-                                        }
-                                        Err(e) => {
-                                            let _ = tx.send(WorkerMsg::Log(format!(
-                                                "[{}] Integrity check execution failed: {}",
-                                                pair.ep_key, e
-                                            )));
                                         }
                                     }
 
@@ -864,9 +965,16 @@ impl eframe::App for AniMergerApp {
                 });
             });
 
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.cfg.verify_integrity, "Verify file integrity post-mux");
+                ui.add_space(16.0);
+                ui.checkbox(&mut self.cfg.auto_sync_subs, "Auto-sync subtitles with Alass");
+            });
+
             ui.separator();
 
-            // Dynamic Scaling Manual Match Section
             let matched_hq: HashSet<PathBuf> =
                 self.pairs.iter().map(|p| p.hq_path.clone()).collect();
             let matched_lang: HashSet<PathBuf> =
@@ -993,7 +1101,7 @@ impl eframe::App for AniMergerApp {
 
             ui.add_space(4.0);
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.strong(format!("Matched Episodes ({})", self.pairs.len()));
                 if ui
                     .add_enabled(
@@ -1020,7 +1128,6 @@ impl eframe::App for AniMergerApp {
                 });
             });
 
-            // Progress Bar Section
             if self.is_running || self.progress > 0.0 {
                 ui.add_space(2.0);
                 ui.add(
