@@ -30,6 +30,15 @@ else
     echo "Warning: mkvmerge not found on system. Make sure to install it via 'brew install mkvtoolnix'."
 fi
 
+ALASS_BIN=$(command -v alass || true)
+if [ -n "${ALASS_BIN}" ]; then
+    echo "Embedding Alass from system: ${ALASS_BIN}"
+    cp "${ALASS_BIN}" "${MACOS_DIR}/alass"
+    chmod +x "${MACOS_DIR}/alass"
+else
+    echo "Warning: alass not found on system. Install it separately to enable subtitle synchronization."
+fi
+
 # Intégration de l'icône si elle existe
 if [ -f "assets/animerger.png" ]; then
     # Optionnel : conversion du PNG en ICNS si iconutil est disponible, sinon on garde le PNG

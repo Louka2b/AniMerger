@@ -12,13 +12,19 @@ if [ -z "${MKVMERGE_BIN}" ]; then
     echo "Error: mkvmerge not found on system. Run: sudo dnf install -y mkvtoolnix"
     exit 1
 fi
+ALASS_BIN="${ALASS_BIN:-build/linux/alass}"
+if [ ! -f "${ALASS_BIN}" ]; then
+    echo "Error: Alass not found at ${ALASS_BIN}. Run: make prepare-linux-alass"
+    exit 1
+fi
 
 rm -rf "${APPDIR}"
 mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/lib" "${DIST_DIR}"
 
 cp "${TARGET_BIN}" "${APPDIR}/usr/bin/${APP}"
 cp "${MKVMERGE_BIN}" "${APPDIR}/usr/bin/mkvmerge"
-chmod +x "${APPDIR}/usr/bin/${APP}" "${APPDIR}/usr/bin/mkvmerge"
+cp "${ALASS_BIN}" "${APPDIR}/usr/bin/alass"
+chmod +x "${APPDIR}/usr/bin/${APP}" "${APPDIR}/usr/bin/mkvmerge" "${APPDIR}/usr/bin/alass"
 
 # Copie de l'icone PNG dans l'AppDir
 if [ -f "assets/animerger.png" ]; then
