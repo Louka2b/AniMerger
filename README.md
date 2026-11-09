@@ -69,10 +69,11 @@ All platforms require:
 Additional tools are needed only for some packaging targets:
 
 - Linux AppImage: `p7zip` is not required at runtime, but is used by some
-  development workflows; `appimagetool` is downloaded automatically if it is
-  not installed.
-- Windows: MinGW and the `x86_64-pc-windows-gnu` Rust target. The build script
-  also requires `7z` or `7za` and downloads the configured MKVToolNix release.
+  development workflows; `appimagetool` and Alass are downloaded automatically
+  if they are not installed.
+- Windows: MinGW, `unzip`, and the `x86_64-pc-windows-gnu` Rust target. The
+  build scripts also require `7z` or `7za` and download the configured
+  MKVToolNix and Alass releases.
 - macOS: Homebrew is recommended for installing MKVToolNix. The macOS bundle
   embeds `mkvmerge` when it is available during the build.
 
@@ -106,15 +107,15 @@ before rebuilding.
 | --- | --- |
 | `make linux` | Builds the native Linux executable in `dist/animerger`. |
 | `make appimage` | Builds the Linux AppImage in `dist/animerger-x86_64.AppImage`. |
-| `make windows` | Downloads `mkvmerge.exe` and builds `dist/animerger.exe`. |
+| `make windows` | Downloads `mkvmerge.exe` and Alass, then builds `dist/animerger.exe`. |
 | `make macos` | Builds `dist/AniMerger.app`. |
 | `make all` | Builds the Linux AppImage and Windows executable. |
 | `make clean` | Removes Cargo build files, packaging files, and `dist/`. |
 
-The Windows build embeds `mkvmerge.exe` in the executable. The Linux AppImage
-bundles `mkvmerge` and its required shared libraries. A macOS app bundle
-embeds the `mkvmerge` found on the build machine; if none is found, install
-MKVToolNix and rebuild.
+The Windows build embeds `mkvmerge.exe` and Alass in the executable. The Linux
+AppImage bundles `mkvmerge`, Alass, and the required shared libraries. A macOS
+app bundle embeds `mkvmerge` and Alass when they are found on the build
+machine; otherwise, install them and rebuild.
 
 ## Project structure
 
