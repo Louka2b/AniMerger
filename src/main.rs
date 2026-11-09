@@ -112,7 +112,29 @@ fn resolve_bundled_mkvmerge() -> String {
         return target.to_string_lossy().to_string();
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(parent) = exe_path.parent() {
+                let bundled = parent.join("mkvmerge");
+                if bundled.exists() {
+                    return bundled.to_string_lossy().to_string();
+                }
+            }
+        }
+        // Fallback to Homebrew path or system PATH
+        let brew_path = Path::new("/opt/homebrew/bin/mkvmerge");
+        if brew_path.exists() {
+            return brew_path.to_string_lossy().to_string();
+        }
+        let intel_brew_path = Path::new("/usr/local/bin/mkvmerge");
+        if intel_brew_path.exists() {
+            return intel_brew_path.to_string_lossy().to_string();
+        }
+        "mkvmerge".to_string()
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         if let Ok(appdir) = std::env::var("APPDIR") {
             let bundled = Path::new(&appdir).join("usr/bin/mkvmerge");
@@ -421,6 +443,19 @@ impl AniMergerApp {
     }
 }
 
+fn load_icon() -> egui::IconData {
+    let icon_bytes = include_bytes!("../assets/animerger.png");
+    let image = image::load_from_memory(icon_bytes)
+        .expect("Failed to load icon path")
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
+}
+
 impl eframe::App for AniMergerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(rx) = &self.rx {
@@ -652,7 +687,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 700.0])
-            .with_min_inner_size([850.0, 580.0]),
+            .with_min_inner_size([850.0, 580.0])
+            .with_icon(load_icon()),
         ..Default::default()
     };
     eframe::run_native(
