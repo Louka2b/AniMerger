@@ -3,12 +3,12 @@ name = "animerger"
 version = "1.0.0"
 edition = "2021"
 description = "Merge high-quality anime video with target-language audio and subtitles via mkvmerge"
-license = "MIT"
 
 [dependencies]
 eframe = "0.28"
 rfd = "0.14"
 regex = "1.10"
+image = "0.24"
 
 [profile.release]
 opt-level = 3

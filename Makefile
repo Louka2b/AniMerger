@@ -2,7 +2,7 @@ APP_NAME := animerger
 DIST_DIR := dist
 WIN_TARGET := x86_64-pc-windows-gnu
 
-.PHONY: all linux appimage windows clean
+.PHONY: all linux appimage windows macos clean
 
 all: appimage windows
 
@@ -22,6 +22,12 @@ windows:
 	cargo build --release --target $(WIN_TARGET)
 	@mkdir -p $(DIST_DIR)
 	cp target/$(WIN_TARGET)/release/$(APP_NAME).exe $(DIST_DIR)/$(APP_NAME).exe
+
+macos:
+	cargo build --release
+	@mkdir -p $(DIST_DIR)
+	cp target/release/$(APP_NAME) $(DIST_DIR)/$(APP_NAME)-macos
+	@echo "MacOS binary built successfully in $(DIST_DIR)/$(APP_NAME)-macos"
 
 clean:
 	cargo clean
