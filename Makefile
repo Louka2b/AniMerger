@@ -23,10 +23,10 @@ windows:
 	@mkdir -p $(DIST_DIR)
 	cp target/$(WIN_TARGET)/release/$(APP_NAME).exe $(DIST_DIR)/$(APP_NAME).exe
 
-macos-app:
+macos:
 	chmod +x scripts/build_macos_app.sh
 	./scripts/build_macos_app.sh
-	
+
 clean:
 	cargo clean
 	rm -rf build $(DIST_DIR)
