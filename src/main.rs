@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -93,6 +93,11 @@ struct AniMergerApp {
     custom_output_name: String,
     cfg: TrackConfig,
     pairs: Vec<EpisodePair>,
+    all_hq_files: Vec<PathBuf>,
+    all_lang_files: Vec<PathBuf>,
+    selected_manual_hq: Option<PathBuf>,
+    selected_manual_lang: Option<PathBuf>,
+    manual_ep_key: String,
     logs: Vec<String>,
     is_running: bool,
     rx: Option<Receiver<WorkerMsg>>,
@@ -122,7 +127,6 @@ fn resolve_bundled_mkvmerge() -> String {
                 }
             }
         }
-        // Fallback to Homebrew path or system PATH
         let brew_path = Path::new("/opt/homebrew/bin/mkvmerge");
         if brew_path.exists() {
             return brew_path.to_string_lossy().to_string();
@@ -159,6 +163,11 @@ impl Default for AniMergerApp {
             custom_output_name: "MyAnime".to_string(),
             cfg: TrackConfig::default(),
             pairs: Vec::new(),
+            all_hq_files: Vec::new(),
+            all_lang_files: Vec::new(),
+            selected_manual_hq: None,
+            selected_manual_lang: None,
+            manual_ep_key: "E01".to_string(),
             logs: vec![format!("Ready. Using mkvmerge: {}", bin)],
             is_running: false,
             rx: None,
@@ -216,47 +225,161 @@ impl AniMergerApp {
             .and_then(|cap| cap[1].parse::<u32>().ok())
     }
 
-    fn scan_directory(dir: &str) -> BTreeMap<u32, PathBuf> {
-        let mut map = BTreeMap::new();
+    fn list_video_files(dir: &str) -> Vec<PathBuf> {
+        let mut files = Vec::new();
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() && Self::is_video_file(&path) {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if let Some(ep_num) = Self::extract_episode_number(name) {
-                            map.insert(ep_num, path);
-                        }
-                    }
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
+    fn scan_directory(dir: &str) -> BTreeMap<u32, PathBuf> {
+        let mut map = BTreeMap::new();
+        for path in Self::list_video_files(dir) {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if let Some(ep_num) = Self::extract_episode_number(name) {
+                    map.insert(ep_num, path);
                 }
             }
         }
         map
     }
 
-    fn match_folders(&mut self) {
-        self.pairs.clear();
-        if self.hq_dir.is_empty() || self.lang_dir.is_empty() {
-            return;
-        }
-        let hq_map = Self::scan_directory(&self.hq_dir);
-        let lang_map = Self::scan_directory(&self.lang_dir);
+    fn refresh_file_lists(&mut self) {
+        self.all_hq_files = if self.hq_dir.is_empty() {
+            Vec::new()
+        } else {
+            Self::list_video_files(&self.hq_dir)
+        };
 
-        for (ep_num, hq_path) in hq_map {
-            if let Some(lang_path) = lang_map.get(&ep_num) {
-                self.pairs.push(EpisodePair {
-                    enabled: true,
-                    ep_key: format!("E{:02}", ep_num),
-                    hq_path,
-                    lang_path: lang_path.clone(),
-                    delay_ms: self.global_delay_ms,
-                    status: "Queued".to_string(),
-                });
+        self.all_lang_files = if self.lang_dir.is_empty() {
+            Vec::new()
+        } else {
+            Self::list_video_files(&self.lang_dir)
+        };
+    }
+
+    fn update_default_manual_selection(&mut self) {
+        let matched_hq: HashSet<_> = self.pairs.iter().map(|p| &p.hq_path).collect();
+        let matched_lang: HashSet<_> = self.pairs.iter().map(|p| &p.lang_path).collect();
+
+        if self
+            .selected_manual_hq
+            .as_ref()
+            .map_or(true, |p| !self.all_hq_files.contains(p))
+        {
+            self.selected_manual_hq = self
+                .all_hq_files
+                .iter()
+                .find(|p| !matched_hq.contains(p))
+                .or_else(|| self.all_hq_files.first())
+                .cloned();
+        }
+
+        if self
+            .selected_manual_lang
+            .as_ref()
+            .map_or(true, |p| !self.all_lang_files.contains(p))
+        {
+            self.selected_manual_lang = self
+                .all_lang_files
+                .iter()
+                .find(|p| !matched_lang.contains(p))
+                .or_else(|| self.all_lang_files.first())
+                .cloned();
+        }
+
+        self.suggest_manual_ep_key();
+    }
+
+    fn suggest_manual_ep_key(&mut self) {
+        if let Some(hq) = &self.selected_manual_hq {
+            if let Some(name) = hq.file_name().and_then(|s| s.to_str()) {
+                if let Some(ep) = Self::extract_episode_number(name) {
+                    self.manual_ep_key = format!("E{:02}", ep);
+                    return;
+                }
             }
         }
-        self.logs.push(format!(
-            "Matched {} episode(s) by episode number.",
-            self.pairs.len()
-        ));
+        if let Some(lang) = &self.selected_manual_lang {
+            if let Some(name) = lang.file_name().and_then(|s| s.to_str()) {
+                if let Some(ep) = Self::extract_episode_number(name) {
+                    self.manual_ep_key = format!("E{:02}", ep);
+                    return;
+                }
+            }
+        }
+        self.manual_ep_key = format!("E{:02}", self.pairs.len() + 1);
+    }
+
+    fn match_folders(&mut self) {
+        self.refresh_file_lists();
+        self.pairs.clear();
+
+        if !self.hq_dir.is_empty() && !self.lang_dir.is_empty() {
+            let hq_map = Self::scan_directory(&self.hq_dir);
+            let lang_map = Self::scan_directory(&self.lang_dir);
+
+            for (ep_num, hq_path) in hq_map {
+                if let Some(lang_path) = lang_map.get(&ep_num) {
+                    self.pairs.push(EpisodePair {
+                        enabled: true,
+                        ep_key: format!("E{:02}", ep_num),
+                        hq_path,
+                        lang_path: lang_path.clone(),
+                        delay_ms: self.global_delay_ms,
+                        status: "Queued".to_string(),
+                    });
+                }
+            }
+            self.logs.push(format!(
+                "Auto-matched {} episode(s) by episode number.",
+                self.pairs.len()
+            ));
+        }
+
+        self.selected_manual_hq = None;
+        self.selected_manual_lang = None;
+        self.update_default_manual_selection();
+    }
+
+    fn add_manual_pair(&mut self) {
+        if let (Some(hq_path), Some(lang_path)) = (
+            self.selected_manual_hq.clone(),
+            self.selected_manual_lang.clone(),
+        ) {
+            let ep_key = if self.manual_ep_key.trim().is_empty() {
+                format!("E{:02}", self.pairs.len() + 1)
+            } else {
+                self.manual_ep_key.trim().to_string()
+            };
+
+            self.logs.push(format!(
+                "Manually paired [{}]: {} + {}",
+                ep_key,
+                hq_path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                lang_path.file_name().and_then(|s| s.to_str()).unwrap_or("")
+            ));
+
+            self.pairs.push(EpisodePair {
+                enabled: true,
+                ep_key,
+                hq_path,
+                lang_path,
+                delay_ms: self.global_delay_ms,
+                status: "Queued (Manual)".to_string(),
+            });
+
+            self.selected_manual_hq = None;
+            self.selected_manual_lang = None;
+            self.update_default_manual_selection();
+        }
     }
 
     fn apply_global_delay(&mut self) {
@@ -394,7 +517,8 @@ impl AniMergerApp {
         thread::spawn(move || {
             for (idx, pair) in jobs {
                 let _ = tx.send(WorkerMsg::EpisodeStatus(idx, "Muxing...".into()));
-                let (out_file, args) = Self::build_mkvmerge_args(&cfg, &pair, &out_dir, mode, &custom_name);
+                let (out_file, args) =
+                    Self::build_mkvmerge_args(&cfg, &pair, &out_dir, mode, &custom_name);
 
                 let _ = tx.send(WorkerMsg::Log(format!(
                     "[{}] Running: {} {}",
@@ -487,7 +611,12 @@ impl eframe::App for AniMergerApp {
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("High Quality Folder:");
-                    ui.add(egui::TextEdit::singleline(&mut self.hq_dir).desired_width(520.0));
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut self.hq_dir).desired_width(520.0))
+                        .lost_focus()
+                    {
+                        self.refresh_file_lists();
+                    }
                     if ui.button("Browse...").clicked() {
                         if let Some(p) = rfd::FileDialog::new().pick_folder() {
                             self.hq_dir = p.display().to_string();
@@ -497,7 +626,12 @@ impl eframe::App for AniMergerApp {
                     ui.end_row();
 
                     ui.label("Right Language Folder:");
-                    ui.add(egui::TextEdit::singleline(&mut self.lang_dir).desired_width(520.0));
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut self.lang_dir).desired_width(520.0))
+                        .lost_focus()
+                    {
+                        self.refresh_file_lists();
+                    }
                     if ui.button("Browse...").clicked() {
                         if let Some(p) = rfd::FileDialog::new().pick_folder() {
                             self.lang_dir = p.display().to_string();
@@ -517,9 +651,21 @@ impl eframe::App for AniMergerApp {
 
                     ui.label("Output File Name:");
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.naming_mode, OutputNamingMode::HqName, "HQ File Name");
-                        ui.radio_value(&mut self.naming_mode, OutputNamingMode::LangName, "Right Language File Name");
-                        ui.radio_value(&mut self.naming_mode, OutputNamingMode::CustomName, "Custom Name");
+                        ui.radio_value(
+                            &mut self.naming_mode,
+                            OutputNamingMode::HqName,
+                            "HQ File Name",
+                        );
+                        ui.radio_value(
+                            &mut self.naming_mode,
+                            OutputNamingMode::LangName,
+                            "Right Language File Name",
+                        );
+                        ui.radio_value(
+                            &mut self.naming_mode,
+                            OutputNamingMode::CustomName,
+                            "Custom Name",
+                        );
 
                         if self.naming_mode == OutputNamingMode::CustomName {
                             ui.add(
@@ -545,7 +691,7 @@ impl eframe::App for AniMergerApp {
 
                     ui.label("mkvmerge Binary:");
                     ui.add(egui::TextEdit::singleline(&mut self.mkvmerge_bin).desired_width(520.0));
-                    if ui.button("Rescan Folders").clicked() {
+                    if ui.button("Auto-Match Folders").clicked() {
                         self.match_folders();
                     }
                     ui.end_row();
@@ -609,8 +755,128 @@ impl eframe::App for AniMergerApp {
 
             ui.separator();
 
+            // Manual Match Section
+            let matched_hq: HashSet<PathBuf> =
+                self.pairs.iter().map(|p| p.hq_path.clone()).collect();
+            let matched_lang: HashSet<PathBuf> =
+                self.pairs.iter().map(|p| p.lang_path.clone()).collect();
+
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.strong("Manual Match:");
+
+                    let selected_hq_text = self
+                        .selected_manual_hq
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Select HQ File (Source A)...");
+
+                    let mut hq_changed = false;
+                    egui::ComboBox::from_id_source("manual_hq_combo")
+                        .width(250.0)
+                        .selected_text(selected_hq_text)
+                        .show_ui(ui, |ui| {
+                            for path in &self.all_hq_files {
+                                let name = path
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("Unknown");
+                                let is_matched = matched_hq.contains(path);
+                                let label = if is_matched {
+                                    format!("[Matched] {}", name)
+                                } else {
+                                    format!("[Unmatched] {}", name)
+                                };
+                                if ui
+                                    .selectable_value(
+                                        &mut self.selected_manual_hq,
+                                        Some(path.clone()),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    hq_changed = true;
+                                }
+                            }
+                        });
+
+                    let selected_lang_text = self
+                        .selected_manual_lang
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Select Language File (Source B)...");
+
+                    let mut lang_changed = false;
+                    egui::ComboBox::from_id_source("manual_lang_combo")
+                        .width(250.0)
+                        .selected_text(selected_lang_text)
+                        .show_ui(ui, |ui| {
+                            for path in &self.all_lang_files {
+                                let name = path
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("Unknown");
+                                let is_matched = matched_lang.contains(path);
+                                let label = if is_matched {
+                                    format!("[Matched] {}", name)
+                                } else {
+                                    format!("[Unmatched] {}", name)
+                                };
+                                if ui
+                                    .selectable_value(
+                                        &mut self.selected_manual_lang,
+                                        Some(path.clone()),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    lang_changed = true;
+                                }
+                            }
+                        });
+
+                    if hq_changed || lang_changed {
+                        self.suggest_manual_ep_key();
+                    }
+
+                    ui.label("Ep:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.manual_ep_key)
+                            .desired_width(50.0)
+                            .hint_text("E01"),
+                    );
+
+                    let can_pair = !self.is_running
+                        && self.selected_manual_hq.is_some()
+                        && self.selected_manual_lang.is_some();
+
+                    if ui
+                        .add_enabled(can_pair, egui::Button::new("+ Pair Selected"))
+                        .clicked()
+                    {
+                        self.add_manual_pair();
+                    }
+                });
+            });
+
+            ui.add_space(4.0);
+
             ui.horizontal(|ui| {
                 ui.strong(format!("Matched Episodes ({})", self.pairs.len()));
+                if ui
+                    .add_enabled(
+                        !self.is_running && !self.pairs.is_empty(),
+                        egui::Button::new("Unmatch All"),
+                    )
+                    .clicked()
+                {
+                    self.pairs.clear();
+                    self.logs.push("Cleared all matched pairs.".into());
+                    self.update_default_manual_selection();
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add_enabled(
@@ -624,13 +890,15 @@ impl eframe::App for AniMergerApp {
                 });
             });
 
+            let mut remove_idx: Option<usize> = None;
+
             egui::ScrollArea::vertical()
                 .id_source("pairs_scroll")
-                .max_height(230.0)
+                .max_height(195.0)
                 .show(ui, |ui| {
                     egui::Grid::new("pairs_grid")
                         .striped(true)
-                        .num_columns(6)
+                        .num_columns(7)
                         .spacing([12.0, 6.0])
                         .show(ui, |ui| {
                             ui.strong("Use");
@@ -639,11 +907,15 @@ impl eframe::App for AniMergerApp {
                             ui.strong("Language File (Source B)");
                             ui.strong("Sync (ms)");
                             ui.strong("Status");
+                            ui.strong("Action");
                             ui.end_row();
 
-                            for pair in &mut self.pairs {
+                            for (idx, pair) in self.pairs.iter_mut().enumerate() {
                                 ui.checkbox(&mut pair.enabled, "");
-                                ui.label(&pair.ep_key);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut pair.ep_key)
+                                        .desired_width(45.0),
+                                );
                                 ui.label(
                                     pair.hq_path
                                         .file_name()
@@ -662,10 +934,35 @@ impl eframe::App for AniMergerApp {
                                         .suffix(" ms"),
                                 );
                                 ui.label(&pair.status);
+                                if ui
+                                    .add_enabled(!self.is_running, egui::Button::new("Unmatch"))
+                                    .clicked()
+                                {
+                                    remove_idx = Some(idx);
+                                }
                                 ui.end_row();
                             }
                         });
                 });
+
+            if let Some(idx) = remove_idx {
+                let removed = self.pairs.remove(idx);
+                self.logs.push(format!(
+                    "Unmatched [{}]: {} <-> {}",
+                    removed.ep_key,
+                    removed
+                        .hq_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(""),
+                    removed
+                        .lang_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                ));
+                self.update_default_manual_selection();
+            }
 
             ui.separator();
 
@@ -673,7 +970,7 @@ impl eframe::App for AniMergerApp {
             egui::ScrollArea::vertical()
                 .id_source("logs_scroll")
                 .stick_to_bottom(true)
-                .max_height(120.0)
+                .max_height(110.0)
                 .show(ui, |ui| {
                     for line in &self.logs {
                         ui.monospace(line);
@@ -686,8 +983,8 @@ impl eframe::App for AniMergerApp {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 700.0])
-            .with_min_inner_size([850.0, 580.0])
+            .with_inner_size([1060.0, 740.0])
+            .with_min_inner_size([900.0, 620.0])
             .with_icon(load_icon()),
         ..Default::default()
     };
