@@ -135,4 +135,9 @@ animerger/
 
 ## License
 
-AniMerger is released under the [MIT License](LICENSE).
+AniMerger is released under the
+[AniMerger Non-Commercial Attribution License](LICENSE).
+
+Non-commercial use, modification, and redistribution are permitted only when
+the required attribution is preserved. Commercial use requires prior written
+permission from Louka2b.
