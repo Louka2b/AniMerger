@@ -52,7 +52,7 @@ impl Default for TrackConfig {
         Self {
             hq_video: true,
             hq_audio: true,
-            hq_audio_langs: String::new(), // Vide par défaut pour tout prendre
+            hq_audio_langs: String::new(),
             hq_subs: false,
             hq_sub_langs: String::new(),
             hq_chapters: true,
@@ -60,10 +60,10 @@ impl Default for TrackConfig {
 
             lang_video: false,
             lang_audio: true,
-            lang_audio_langs: String::new(), // Vide par défaut pour tout prendre
+            lang_audio_langs: String::new(),
             lang_audio_default: true,
             lang_subs: true,
-            lang_sub_langs: String::new(), // Vide par défaut pour tout prendre
+            lang_sub_langs: String::new(),
             lang_subs_default: true,
             lang_chapters: false,
             lang_attachments: true,
@@ -428,7 +428,6 @@ impl AniMergerApp {
 
         let out_file = Path::new(out_dir).join(format!("{}.mkv", final_filename));
 
-        // Suppression de l'argument `--ui-language en` qui plantait sur macOS
         let mut args = vec![
             "-o".to_string(),
             out_file.to_string_lossy().to_string(),
@@ -603,6 +602,33 @@ impl AniMergerApp {
                             Ok(status) => {
                                 let code = status.code().unwrap_or(2);
                                 if code == 0 || code == 1 {
+                                    // Validation d'intégrité post-mux avec mkvmerge --identify
+                                    let mut verify_cmd = Command::new(&bin);
+                                    verify_cmd.arg("--identify").arg(&out_file);
+                                    
+                                    match verify_cmd.output() {
+                                        Ok(out) => {
+                                            let stdout_str = String::from_utf8_lossy(&out.stdout);
+                                            if stdout_str.contains("Track ID") {
+                                                let _ = tx.send(WorkerMsg::Log(format!(
+                                                    "[{}] Integrity check passed.",
+                                                    pair.ep_key
+                                                )));
+                                            } else {
+                                                let _ = tx.send(WorkerMsg::Log(format!(
+                                                    "[{}] Warning: Integrity check response unusual.",
+                                                    pair.ep_key
+                                                )));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(WorkerMsg::Log(format!(
+                                                "[{}] Integrity check execution failed: {}",
+                                                pair.ep_key, e
+                                            )));
+                                        }
+                                    }
+
                                     let status_label =
                                         if code == 0 { "Done" } else { "Done (Warn)" };
                                     let _ =
