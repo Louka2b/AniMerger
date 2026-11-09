@@ -4,8 +4,9 @@ use eframe::egui;
 use regex::Regex;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
@@ -79,6 +80,7 @@ enum OutputNamingMode {
 
 enum WorkerMsg {
     EpisodeStatus(usize, String),
+    Progress(f32, String),
     Log(String),
     Finished,
 }
@@ -100,6 +102,8 @@ struct AniMergerApp {
     manual_ep_key: String,
     logs: Vec<String>,
     is_running: bool,
+    progress: f32,
+    progress_text: String,
     rx: Option<Receiver<WorkerMsg>>,
 }
 
@@ -170,6 +174,8 @@ impl Default for AniMergerApp {
             manual_ep_key: "E01".to_string(),
             logs: vec![format!("Ready. Using mkvmerge: {}", bin)],
             is_running: false,
+            progress: 0.0,
+            progress_text: "Idle".to_string(),
             rx: None,
         }
     }
@@ -422,7 +428,12 @@ impl AniMergerApp {
 
         let out_file = Path::new(out_dir).join(format!("{}.mkv", final_filename));
 
-        let mut args = vec!["-o".to_string(), out_file.to_string_lossy().to_string()];
+        let mut args = vec![
+            "--ui-language".to_string(),
+            "en".to_string(),
+            "-o".to_string(),
+            out_file.to_string_lossy().to_string(),
+        ];
 
         if !cfg.hq_video {
             args.push("--no-video".into());
@@ -497,15 +508,6 @@ impl AniMergerApp {
         }
         let _ = fs::create_dir_all(&self.out_dir);
 
-        let (tx, rx) = channel();
-        self.rx = Some(rx);
-        self.is_running = true;
-
-        let bin = self.mkvmerge_bin.clone();
-        let cfg = self.cfg.clone();
-        let out_dir = self.out_dir.clone();
-        let mode = self.naming_mode;
-        let custom_name = self.custom_output_name.clone();
         let jobs: Vec<(usize, EpisodePair)> = self
             .pairs
             .iter()
@@ -514,9 +516,40 @@ impl AniMergerApp {
             .filter(|(_, p)| p.enabled)
             .collect();
 
+        if jobs.is_empty() {
+            self.logs.push("No episodes enabled for merging.".into());
+            return;
+        }
+
+        let (tx, rx) = channel();
+        self.rx = Some(rx);
+        self.is_running = true;
+        self.progress = 0.0;
+        self.progress_text = format!("Starting batch (0/{})...", jobs.len());
+
+        let bin = self.mkvmerge_bin.clone();
+        let cfg = self.cfg.clone();
+        let out_dir = self.out_dir.clone();
+        let mode = self.naming_mode;
+        let custom_name = self.custom_output_name.clone();
+
         thread::spawn(move || {
-            for (idx, pair) in jobs {
-                let _ = tx.send(WorkerMsg::EpisodeStatus(idx, "Muxing...".into()));
+            let total_jobs = jobs.len();
+            let prog_re = Regex::new(r"(\d+)%").unwrap();
+
+            for (job_i, (idx, pair)) in jobs.into_iter().enumerate() {
+                let _ = tx.send(WorkerMsg::EpisodeStatus(idx, "Muxing (0%)".into()));
+                let base_progress = job_i as f32 / total_jobs as f32;
+                let _ = tx.send(WorkerMsg::Progress(
+                    base_progress,
+                    format!(
+                        "Merging {} ({}/{}) — 0%",
+                        pair.ep_key,
+                        job_i + 1,
+                        total_jobs
+                    ),
+                ));
+
                 let (out_file, args) =
                     Self::build_mkvmerge_args(&cfg, &pair, &out_dir, mode, &custom_name);
 
@@ -528,29 +561,74 @@ impl AniMergerApp {
                 )));
 
                 let mut cmd = Command::new(&bin);
-                cmd.args(&args);
+                cmd.args(&args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
 
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000);
 
-                match cmd.output() {
-                    Ok(output) => {
-                        let code = output.status.code().unwrap_or(2);
-                        if code == 0 || code == 1 {
-                            let status_label = if code == 0 { "Done" } else { "Done (Warn)" };
-                            let _ = tx.send(WorkerMsg::EpisodeStatus(idx, status_label.into()));
-                            let _ = tx.send(WorkerMsg::Log(format!(
-                                "[{}] Saved -> {}",
-                                pair.ep_key,
-                                out_file.display()
-                            )));
-                        } else {
-                            let err = String::from_utf8_lossy(&output.stdout);
-                            let _ = tx.send(WorkerMsg::EpisodeStatus(idx, "Failed".into()));
-                            let _ = tx.send(WorkerMsg::Log(format!(
-                                "[{}] mkvmerge error: {}",
-                                pair.ep_key, err
-                            )));
+                match cmd.spawn() {
+                    Ok(mut child) => {
+                        let mut last_lines = Vec::new();
+                        if let Some(stdout) = child.stdout.take() {
+                            let reader = BufReader::new(stdout);
+                            for line in reader.lines().flatten() {
+                                if let Some(cap) = prog_re.captures(&line) {
+                                    if let Ok(pct) = cap[1].parse::<u32>() {
+                                        let pct_clamped = pct.min(100);
+                                        let overall = (job_i as f32 + (pct_clamped as f32 / 100.0))
+                                            / total_jobs as f32;
+                                        let _ = tx.send(WorkerMsg::EpisodeStatus(
+                                            idx,
+                                            format!("Muxing ({}%)", pct_clamped),
+                                        ));
+                                        let _ = tx.send(WorkerMsg::Progress(
+                                            overall,
+                                            format!(
+                                                "Merging {} ({}/{}) — {}%",
+                                                pair.ep_key,
+                                                job_i + 1,
+                                                total_jobs,
+                                                pct_clamped
+                                            ),
+                                        ));
+                                    }
+                                } else if !line.trim().is_empty() {
+                                    last_lines.push(line);
+                                }
+                            }
+                        }
+
+                        match child.wait() {
+                            Ok(status) => {
+                                let code = status.code().unwrap_or(2);
+                                if code == 0 || code == 1 {
+                                    let status_label =
+                                        if code == 0 { "Done" } else { "Done (Warn)" };
+                                    let _ =
+                                        tx.send(WorkerMsg::EpisodeStatus(idx, status_label.into()));
+                                    let _ = tx.send(WorkerMsg::Log(format!(
+                                        "[{}] Saved -> {}",
+                                        pair.ep_key,
+                                        out_file.display()
+                                    )));
+                                } else {
+                                    let _ = tx.send(WorkerMsg::EpisodeStatus(idx, "Failed".into()));
+                                    let _ = tx.send(WorkerMsg::Log(format!(
+                                        "[{}] mkvmerge error: {}",
+                                        pair.ep_key,
+                                        last_lines.join(" | ")
+                                    )));
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(WorkerMsg::EpisodeStatus(idx, "Error".into()));
+                                let _ = tx.send(WorkerMsg::Log(format!(
+                                    "[{}] Wait error: {}",
+                                    pair.ep_key, e
+                                )));
+                            }
                         }
                     }
                     Err(e) => {
@@ -562,6 +640,10 @@ impl AniMergerApp {
                     }
                 }
             }
+            let _ = tx.send(WorkerMsg::Progress(
+                1.0,
+                format!("Completed {}/{} episode(s)", total_jobs, total_jobs),
+            ));
             let _ = tx.send(WorkerMsg::Finished);
         });
     }
@@ -589,6 +671,10 @@ impl eframe::App for AniMergerApp {
                         if let Some(p) = self.pairs.get_mut(idx) {
                             p.status = status;
                         }
+                    }
+                    WorkerMsg::Progress(val, text) => {
+                        self.progress = val;
+                        self.progress_text = text;
                     }
                     WorkerMsg::Log(line) => self.logs.push(line),
                     WorkerMsg::Finished => {
@@ -755,7 +841,7 @@ impl eframe::App for AniMergerApp {
 
             ui.separator();
 
-            // Manual Match Section
+            // Dynamic Scaling Manual Match Section
             let matched_hq: HashSet<PathBuf> =
                 self.pairs.iter().map(|p| p.hq_path.clone()).collect();
             let matched_lang: HashSet<PathBuf> =
@@ -764,7 +850,35 @@ impl eframe::App for AniMergerApp {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.strong("Manual Match:");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let can_pair = !self.is_running
+                            && self.selected_manual_hq.is_some()
+                            && self.selected_manual_lang.is_some();
 
+                        if ui
+                            .add_enabled(can_pair, egui::Button::new("+ Pair Selected"))
+                            .clicked()
+                        {
+                            self.add_manual_pair();
+                        }
+
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.manual_ep_key)
+                                .desired_width(55.0)
+                                .hint_text("E01"),
+                        );
+                        ui.label("Ep Tag:");
+                    });
+                });
+
+                ui.add_space(4.0);
+
+                // Responsive width calculation based on current window width
+                let combo_width = ((ui.available_width() - 24.0) / 2.0).max(160.0);
+                let mut hq_changed = false;
+                let mut lang_changed = false;
+
+                ui.horizontal(|ui| {
                     let selected_hq_text = self
                         .selected_manual_hq
                         .as_ref()
@@ -772,11 +886,12 @@ impl eframe::App for AniMergerApp {
                         .and_then(|s| s.to_str())
                         .unwrap_or("Select HQ File (Source A)...");
 
-                    let mut hq_changed = false;
                     egui::ComboBox::from_id_source("manual_hq_combo")
-                        .width(250.0)
+                        .width(combo_width)
                         .selected_text(selected_hq_text)
+                        .truncate(true)
                         .show_ui(ui, |ui| {
+                            ui.set_min_width(combo_width);
                             for path in &self.all_hq_files {
                                 let name = path
                                     .file_name()
@@ -792,14 +907,17 @@ impl eframe::App for AniMergerApp {
                                     .selectable_value(
                                         &mut self.selected_manual_hq,
                                         Some(path.clone()),
-                                        label,
+                                        &label,
                                     )
+                                    .on_hover_text(name)
                                     .clicked()
                                 {
                                     hq_changed = true;
                                 }
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text(selected_hq_text);
 
                     let selected_lang_text = self
                         .selected_manual_lang
@@ -808,11 +926,12 @@ impl eframe::App for AniMergerApp {
                         .and_then(|s| s.to_str())
                         .unwrap_or("Select Language File (Source B)...");
 
-                    let mut lang_changed = false;
                     egui::ComboBox::from_id_source("manual_lang_combo")
-                        .width(250.0)
+                        .width(combo_width)
                         .selected_text(selected_lang_text)
+                        .truncate(true)
                         .show_ui(ui, |ui| {
+                            ui.set_min_width(combo_width);
                             for path in &self.all_lang_files {
                                 let name = path
                                     .file_name()
@@ -828,37 +947,22 @@ impl eframe::App for AniMergerApp {
                                     .selectable_value(
                                         &mut self.selected_manual_lang,
                                         Some(path.clone()),
-                                        label,
+                                        &label,
                                     )
+                                    .on_hover_text(name)
                                     .clicked()
                                 {
                                     lang_changed = true;
                                 }
                             }
-                        });
-
-                    if hq_changed || lang_changed {
-                        self.suggest_manual_ep_key();
-                    }
-
-                    ui.label("Ep:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.manual_ep_key)
-                            .desired_width(50.0)
-                            .hint_text("E01"),
-                    );
-
-                    let can_pair = !self.is_running
-                        && self.selected_manual_hq.is_some()
-                        && self.selected_manual_lang.is_some();
-
-                    if ui
-                        .add_enabled(can_pair, egui::Button::new("+ Pair Selected"))
-                        .clicked()
-                    {
-                        self.add_manual_pair();
-                    }
+                        })
+                        .response
+                        .on_hover_text(selected_lang_text);
                 });
+
+                if hq_changed || lang_changed {
+                    self.suggest_manual_ep_key();
+                }
             });
 
             ui.add_space(4.0);
@@ -890,11 +994,22 @@ impl eframe::App for AniMergerApp {
                 });
             });
 
+            // Progress Bar Section
+            if self.is_running || self.progress > 0.0 {
+                ui.add_space(2.0);
+                ui.add(
+                    egui::ProgressBar::new(self.progress)
+                        .text(&self.progress_text)
+                        .animate(self.is_running),
+                );
+                ui.add_space(2.0);
+            }
+
             let mut remove_idx: Option<usize> = None;
 
             egui::ScrollArea::vertical()
                 .id_source("pairs_scroll")
-                .max_height(195.0)
+                .max_height(175.0)
                 .show(ui, |ui| {
                     egui::Grid::new("pairs_grid")
                         .striped(true)
@@ -916,18 +1031,22 @@ impl eframe::App for AniMergerApp {
                                     egui::TextEdit::singleline(&mut pair.ep_key)
                                         .desired_width(45.0),
                                 );
-                                ui.label(
-                                    pair.hq_path
-                                        .file_name()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or(""),
-                                );
-                                ui.label(
-                                    pair.lang_path
-                                        .file_name()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or(""),
-                                );
+                                let hq_name = pair
+                                    .hq_path
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("");
+                                ui.add(egui::Label::new(hq_name).truncate(true))
+                                    .on_hover_text(hq_name);
+
+                                let lang_name = pair
+                                    .lang_path
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("");
+                                ui.add(egui::Label::new(lang_name).truncate(true))
+                                    .on_hover_text(lang_name);
+
                                 ui.add(
                                     egui::DragValue::new(&mut pair.delay_ms)
                                         .speed(50)
@@ -970,7 +1089,7 @@ impl eframe::App for AniMergerApp {
             egui::ScrollArea::vertical()
                 .id_source("logs_scroll")
                 .stick_to_bottom(true)
-                .max_height(110.0)
+                .max_height(100.0)
                 .show(ui, |ui| {
                     for line in &self.logs {
                         ui.monospace(line);
@@ -983,8 +1102,8 @@ impl eframe::App for AniMergerApp {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1060.0, 740.0])
-            .with_min_inner_size([900.0, 620.0])
+            .with_inner_size([1080.0, 760.0])
+            .with_min_inner_size([900.0, 640.0])
             .with_icon(load_icon()),
         ..Default::default()
     };
