@@ -23,12 +23,10 @@ windows:
 	@mkdir -p $(DIST_DIR)
 	cp target/$(WIN_TARGET)/release/$(APP_NAME).exe $(DIST_DIR)/$(APP_NAME).exe
 
-macos:
-	cargo build --release
-	@mkdir -p $(DIST_DIR)
-	cp target/release/$(APP_NAME) $(DIST_DIR)/$(APP_NAME)-macos
-	@echo "MacOS binary built successfully in $(DIST_DIR)/$(APP_NAME)-macos"
-
+macos-app:
+	chmod +x scripts/build_macos_app.sh
+	./scripts/build_macos_app.sh
+	
 clean:
 	cargo clean
 	rm -rf build $(DIST_DIR)
