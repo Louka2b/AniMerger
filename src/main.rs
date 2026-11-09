@@ -52,7 +52,7 @@ impl Default for TrackConfig {
         Self {
             hq_video: true,
             hq_audio: true,
-            hq_audio_langs: "jpn".to_string(),
+            hq_audio_langs: String::new(), // Vide par défaut pour tout prendre
             hq_subs: false,
             hq_sub_langs: String::new(),
             hq_chapters: true,
@@ -60,10 +60,10 @@ impl Default for TrackConfig {
 
             lang_video: false,
             lang_audio: true,
-            lang_audio_langs: String::new(),
+            lang_audio_langs: String::new(), // Vide par défaut pour tout prendre
             lang_audio_default: true,
             lang_subs: true,
-            lang_sub_langs: String::new(),
+            lang_sub_langs: String::new(), // Vide par défaut pour tout prendre
             lang_subs_default: true,
             lang_chapters: false,
             lang_attachments: true,
@@ -428,9 +428,8 @@ impl AniMergerApp {
 
         let out_file = Path::new(out_dir).join(format!("{}.mkv", final_filename));
 
+        // Suppression de l'argument `--ui-language en` qui plantait sur macOS
         let mut args = vec![
-            "--ui-language".to_string(),
-            "en".to_string(),
             "-o".to_string(),
             out_file.to_string_lossy().to_string(),
         ];
@@ -793,7 +792,7 @@ impl eframe::App for AniMergerApp {
                         ui.checkbox(&mut self.cfg.hq_audio, "Audio Tracks — Lang filter:");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.cfg.hq_audio_langs)
-                                .hint_text("e.g. jpn (blank = all)")
+                                .hint_text("blank = all languages")
                                 .desired_width(110.0),
                         );
                     });
@@ -801,7 +800,7 @@ impl eframe::App for AniMergerApp {
                         ui.checkbox(&mut self.cfg.hq_subs, "Subtitles — Lang filter:");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.cfg.hq_sub_langs)
-                                .hint_text("e.g. eng (blank = all)")
+                                .hint_text("blank = all languages")
                                 .desired_width(110.0),
                         );
                     });
@@ -818,7 +817,7 @@ impl eframe::App for AniMergerApp {
                         ui.checkbox(&mut self.cfg.lang_audio, "Audio Tracks — Lang filter:");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.cfg.lang_audio_langs)
-                                .hint_text("e.g. fra,eng (blank = all)")
+                                .hint_text("blank = all languages")
                                 .desired_width(110.0),
                         );
                         ui.checkbox(&mut self.cfg.lang_audio_default, "Default");
@@ -827,7 +826,7 @@ impl eframe::App for AniMergerApp {
                         ui.checkbox(&mut self.cfg.lang_subs, "Subtitles — Lang filter:");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.cfg.lang_sub_langs)
-                                .hint_text("e.g. fra,eng (blank = all)")
+                                .hint_text("blank = all languages")
                                 .desired_width(110.0),
                         );
                         ui.checkbox(&mut self.cfg.lang_subs_default, "Default");
@@ -873,23 +872,31 @@ impl eframe::App for AniMergerApp {
 
                 ui.add_space(4.0);
 
-                // Responsive width calculation based on current window width
                 let combo_width = ((ui.available_width() - 24.0) / 2.0).max(160.0);
                 let mut hq_changed = false;
                 let mut lang_changed = false;
 
-                ui.horizontal(|ui| {
-                    let selected_hq_text = self
-                        .selected_manual_hq
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Select HQ File (Source A)...");
+                let selected_hq_text = self
+                    .selected_manual_hq
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Select HQ File (Source A)...")
+                    .to_string();
 
+                let selected_lang_text = self
+                    .selected_manual_lang
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Select Language File (Source B)...")
+                    .to_string();
+
+                ui.horizontal(|ui| {
                     egui::ComboBox::from_id_source("manual_hq_combo")
                         .width(combo_width)
-                        .selected_text(selected_hq_text)
-                        .truncate(true)
+                        .selected_text(&selected_hq_text)
+                        .truncate()
                         .show_ui(ui, |ui| {
                             ui.set_min_width(combo_width);
                             for path in &self.all_hq_files {
@@ -917,19 +924,12 @@ impl eframe::App for AniMergerApp {
                             }
                         })
                         .response
-                        .on_hover_text(selected_hq_text);
-
-                    let selected_lang_text = self
-                        .selected_manual_lang
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Select Language File (Source B)...");
+                        .on_hover_text(&selected_hq_text);
 
                     egui::ComboBox::from_id_source("manual_lang_combo")
                         .width(combo_width)
-                        .selected_text(selected_lang_text)
-                        .truncate(true)
+                        .selected_text(&selected_lang_text)
+                        .truncate()
                         .show_ui(ui, |ui| {
                             ui.set_min_width(combo_width);
                             for path in &self.all_lang_files {
@@ -957,7 +957,7 @@ impl eframe::App for AniMergerApp {
                             }
                         })
                         .response
-                        .on_hover_text(selected_lang_text);
+                        .on_hover_text(&selected_lang_text);
                 });
 
                 if hq_changed || lang_changed {
@@ -1036,7 +1036,7 @@ impl eframe::App for AniMergerApp {
                                     .file_name()
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("");
-                                ui.add(egui::Label::new(hq_name).truncate(true))
+                                ui.add(egui::Label::new(hq_name).truncate())
                                     .on_hover_text(hq_name);
 
                                 let lang_name = pair
@@ -1044,7 +1044,7 @@ impl eframe::App for AniMergerApp {
                                     .file_name()
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("");
-                                ui.add(egui::Label::new(lang_name).truncate(true))
+                                ui.add(egui::Label::new(lang_name).truncate())
                                     .on_hover_text(lang_name);
 
                                 ui.add(
