@@ -112,7 +112,7 @@ before rebuilding.
 | --- | --- |
 | `make fetch` | Creates the build directories and checks/downloads platform dependencies. |
 | `make linux` | Builds the Linux AppImage in `dist/AniMerger-x86_64.AppImage`. |
-| `make windows` | Downloads Alass and MKVToolNix, then builds `target/x86_64-pc-windows-gnu/release/animerger.exe`. |
+| `make windows` | Downloads Alass and MKVToolNix, then builds `dist/AniMerger.exe`. |
 | `make macos` | Builds `dist/AniMerger.app`. |
 | `make all` | Builds the macOS app, Linux AppImage, and Windows executable. |
 | `make clean` | Removes Cargo build files, downloaded build dependencies, packaging files, and `dist/`. |

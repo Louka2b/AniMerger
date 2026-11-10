@@ -3,7 +3,8 @@ SHELL := /bin/bash
 CARGO ?= cargo
 export CARGO_TERM_COLOR := always
 WINDOWS_TARGET := x86_64-pc-windows-gnu
-WINDOWS_BINARY := target/$(WINDOWS_TARGET)/release/animerger.exe
+WINDOWS_RELEASE_BINARY := target/$(WINDOWS_TARGET)/release/animerger.exe
+WINDOWS_BINARY := dist/AniMerger.exe
 LINUX_APPIMAGE := dist/AniMerger-x86_64.AppImage
 
 RESET := \033[0m
@@ -47,9 +48,11 @@ windows:
 	@printf '\n$(CYAN)$(BOLD)==> Building Windows executable$(RESET)\n'
 	@./scripts/prepare_win_mkvmerge.sh
 	@$(CARGO) build --release --target $(WINDOWS_TARGET)
+	@mkdir -p dist
+	@cp $(WINDOWS_RELEASE_BINARY) $(WINDOWS_BINARY)
 	@printf '$(GREEN)    Output: $(WINDOWS_BINARY)$(RESET)\n'
 
 clean:
 	@printf '$(YELLOW)Removing build artifacts...$(RESET)\n'
 	@$(CARGO) clean
-	@rm -rf AppDir dist/*.AppImage dist/*.app build/
+	@rm -rf AppDir dist/*.AppImage dist/*.app dist/*.exe build/
