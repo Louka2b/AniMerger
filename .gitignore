@@ -1,0 +1,19 @@
+/target/
+/build/
+/AppDir/
+/dist/
+/mkvtoolnix.tar.xz
+
+# macOS
+.DS_Store
+*.app/
+
+# Windows and Linux build artifacts
+*.exe
+*.AppImage
+
+# Local editor and environment files
+.vscode/
+.idea/
+*.swp
+*.swo

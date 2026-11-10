@@ -64,18 +64,20 @@ All platforms require:
 
 - Rust and Cargo
 - GNU Make
+- `curl` for dependency downloads
 - MKVToolNix (`mkvmerge`)
 
 Additional tools are needed only for some packaging targets:
 
-- Linux AppImage: `p7zip` is not required at runtime, but is used by some
-  development workflows; `appimagetool` and Alass are downloaded automatically
-  if they are not installed.
-- Windows: MinGW, `unzip`, and the `x86_64-pc-windows-gnu` Rust target. The
-  build scripts also require `7z` or `7za` and download the configured
-  MKVToolNix and Alass releases.
-- macOS: Homebrew is recommended for installing MKVToolNix. The macOS bundle
-  embeds `mkvmerge` when it is available during the build.
+- Linux AppImage: `wget` is used to download `appimagetool`; Alass is downloaded
+  automatically and `mkvmerge` must be installed or copied to
+  `build/linux/mkvmerge`.
+- Windows: MinGW, `unzip`, `7z` or `7za`, and the
+  `x86_64-pc-windows-gnu` Rust target. The build scripts download Alass and
+  MKVToolNix when possible.
+- macOS: Homebrew is recommended for installing MKVToolNix. The app bundle
+  embeds `mkvmerge` when it is available during the build and embeds Alass when
+  a local `alass` executable is available.
 
 ### Fedora
 
@@ -83,11 +85,14 @@ Additional tools are needed only for some packaging targets:
 sudo dnf install -y rust cargo make mkvtoolnix p7zip p7zip-plugins
 ```
 
+For the AppImage and Windows targets, also install `curl`, `wget`, and
+`unzip` if they are not already available.
+
 ### Debian, Ubuntu, or Mint
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential curl mkvtoolnix p7zip-full \
+sudo apt install -y build-essential curl wget unzip mkvtoolnix p7zip-full \
   libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
   libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
 ```
@@ -105,17 +110,41 @@ before rebuilding.
 
 | Command | Result |
 | --- | --- |
-| `make linux` | Builds the native Linux executable in `dist/animerger`. |
-| `make appimage` | Builds the Linux AppImage in `dist/animerger-x86_64.AppImage`. |
-| `make windows` | Downloads `mkvmerge.exe` and Alass, then builds `dist/animerger.exe`. |
+| `make fetch` | Creates the build directories and checks/downloads platform dependencies. |
+| `make linux` | Builds the Linux AppImage in `dist/AniMerger-x86_64.AppImage`. |
+| `make windows` | Downloads Alass and MKVToolNix, then builds `target/x86_64-pc-windows-gnu/release/animerger.exe`. |
 | `make macos` | Builds `dist/AniMerger.app`. |
-| `make all` | Builds the Linux AppImage and Windows executable. |
+| `make all` | Builds the macOS app, Linux AppImage, and Windows executable. |
 | `make clean` | Removes Cargo build files, packaging files, and `dist/`. |
 
 The Windows build embeds `mkvmerge.exe` and Alass in the executable. The Linux
-AppImage bundles `mkvmerge`, Alass, and the required shared libraries. A macOS
-app bundle embeds `mkvmerge` and Alass when they are found on the build
-machine; otherwise, install them and rebuild.
+AppImage bundles `mkvmerge` and Alass. A macOS app bundle embeds `mkvmerge` and
+Alass when they are found on the build machine; otherwise, install them and
+rebuild. The build scripts may leave downloaded dependency files in `build/`.
+
+### Windows cross-compilation
+
+Install the GNU Windows target before running the Windows build:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+make windows
+```
+
+The Windows packaging script uses the official MKVToolNix archive and requires
+`7z` or `7za` to extract `mkvmerge.exe`.
+
+## Matching and synchronization
+
+Automatic matching extracts an episode key from each filename. It recognizes
+formats such as `S01E01`, `1x01`, `E01`, `Ep 01`, `Episode 01`, and
+episode-only numbers. When a key is duplicated, use the manual matching lists
+to select the intended files and assign an episode tag.
+
+The global delay is expressed in milliseconds and can be overridden for each
+episode. **Auto-sync subtitles with Alass** is optional; if Alass fails for an
+episode, AniMerger logs the error and continues with the original source file.
+**Verify integrity post-mux** checks the `mkvmerge` output after each merge.
 
 ## Project structure
 
