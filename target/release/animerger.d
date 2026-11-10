@@ -1,1 +1,0 @@
-/Users/louka/Documents/Documents\ -\ El\ MacBookito/fijefje/target/release/animerger: /Users/louka/Documents/Documents\ -\ El\ MacBookito/fijefje/assets/animerger.png /Users/louka/Documents/Documents\ -\ El\ MacBookito/fijefje/src/main.rs
