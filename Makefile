@@ -1,6 +1,6 @@
 .PHONY: all macos linux windows clean fetch
 
-all: fetch macos linux windows
+all: macos linux windows
 
 fetch:
 	@mkdir -p build/win build/mac build/linux scripts
@@ -13,9 +13,10 @@ macos: fetch
 
 linux: fetch
 	@chmod +x scripts/*.sh
-	./scripts/build_linux_appimage.sh
+	./scripts/build_appimage.sh
 
 windows: fetch
+	./scripts/prepare_win_mkvmerge.sh
 	cargo build --release --target x86_64-pc-windows-gnu
 	@echo "Windows standalone .exe compiled successfully in target/x86_64-pc-windows-gnu/release/animerger.exe !"
 
