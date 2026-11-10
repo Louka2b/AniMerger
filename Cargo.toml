@@ -9,6 +9,7 @@ eframe = "0.28"
 rfd = "0.14"
 regex = "1.10"
 image = "0.24"
+egui_extras = "0.28.1"
 
 [profile.release]
 opt-level = 3

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use regex::Regex;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -48,7 +49,7 @@ struct TrackConfig {
     lang_subs_default: bool,
     lang_chapters: bool,
     lang_attachments: bool,
-    
+
     verify_integrity: bool,
     auto_sync_subs: bool,
 }
@@ -109,6 +110,7 @@ struct AniMergerApp {
     selected_manual_hq: Option<PathBuf>,
     selected_manual_lang: Option<PathBuf>,
     manual_ep_key: String,
+    hq_col_ratio: f32, // Ratio de répartition entre Source A et Source B (0.5 = 50% chacun)
     logs: Vec<String>,
     is_running: bool,
     progress: f32,
@@ -228,6 +230,7 @@ impl Default for AniMergerApp {
             selected_manual_hq: None,
             selected_manual_lang: None,
             manual_ep_key: "E01".to_string(),
+            hq_col_ratio: 0.5,
             logs: vec![format!("Ready. Using mkvmerge: {}", bin)],
             is_running: false,
             progress: 0.0,
@@ -606,7 +609,8 @@ impl AniMergerApp {
                 ));
 
                 let mut active_lang_path = pair.lang_path.clone();
-                let temp_synced_sub = std::env::temp_dir().join(format!("synced_{}.srt", pair.ep_key));
+                let temp_synced_sub =
+                    std::env::temp_dir().join(format!("synced_{}.srt", pair.ep_key));
 
                 if cfg.auto_sync_subs {
                     let alass_bin = resolve_bundled_alass();
@@ -616,9 +620,10 @@ impl AniMergerApp {
                     )));
 
                     let mut alass_cmd = Command::new(&alass_bin);
-                    alass_cmd.arg(&pair.hq_path)
-                             .arg(&pair.lang_path)
-                             .arg(&temp_synced_sub);
+                    alass_cmd
+                        .arg(&pair.hq_path)
+                        .arg(&pair.lang_path)
+                        .arg(&temp_synced_sub);
 
                     #[cfg(target_os = "windows")]
                     alass_cmd.creation_flags(0x08000000);
@@ -641,15 +646,21 @@ impl AniMergerApp {
                         }
                         Err(e) => {
                             let _ = tx.send(WorkerMsg::Log(format!(
-                                    "[{}] Failed to execute Alass binary ({}): {}. Skipping sync.",
-                                    pair.ep_key, alass_bin, e
+                                "[{}] Failed to execute Alass binary ({}): {}. Skipping sync.",
+                                pair.ep_key, alass_bin, e
                             )));
                         }
                     }
                 }
 
-                let (out_file, args) =
-                    Self::build_mkvmerge_args(&cfg, &pair, &active_lang_path, &out_dir, mode, &custom_name);
+                let (out_file, args) = Self::build_mkvmerge_args(
+                    &cfg,
+                    &pair,
+                    &active_lang_path,
+                    &out_dir,
+                    mode,
+                    &custom_name,
+                );
 
                 let _ = tx.send(WorkerMsg::Log(format!(
                     "[{}] Running: {} {}",
@@ -705,10 +716,11 @@ impl AniMergerApp {
                                     if cfg.verify_integrity {
                                         let mut verify_cmd = Command::new(&bin);
                                         verify_cmd.arg("--identify").arg(&out_file);
-                                        
+
                                         match verify_cmd.output() {
                                             Ok(out) => {
-                                                let stdout_str = String::from_utf8_lossy(&out.stdout);
+                                                let stdout_str =
+                                                    String::from_utf8_lossy(&out.stdout);
                                                 if stdout_str.contains("Track ID") {
                                                     let _ = tx.send(WorkerMsg::Log(format!(
                                                         "[{}] Integrity check passed.",
@@ -814,22 +826,49 @@ impl eframe::App for AniMergerApp {
             }
         }
 
+        // Panneau inférieur fixe pour les logs
+        egui::TopBottomPanel::bottom("bottom_logs_panel")
+            .resizable(true)
+            .min_height(80.0)
+            .default_height(105.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.strong("mkvmerge Output Log");
+                ui.add_space(2.0);
+                egui::ScrollArea::vertical()
+                    .id_source("logs_scroll")
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for line in &self.logs {
+                            ui.monospace(line);
+                        }
+                    });
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("AniMerger — High Quality Video + Target Language Muxer");
             ui.add_space(6.0);
 
-            egui::Grid::new("paths_grid")
+            let label_col_w = 145.0;
+            let btn_col_w = 135.0;
+            let field_w = (ui.available_width() - label_col_w - btn_col_w - 20.0).max(200.0);
+
+            egui::Grid::new("top_paths_grid")
                 .num_columns(3)
                 .spacing([8.0, 6.0])
                 .show(ui, |ui| {
                     ui.label("High Quality Folder:");
                     if ui
-                        .add(egui::TextEdit::singleline(&mut self.hq_dir).desired_width(520.0))
+                        .add(egui::TextEdit::singleline(&mut self.hq_dir).desired_width(field_w))
                         .lost_focus()
                     {
                         self.refresh_file_lists();
                     }
-                    if ui.button("Browse...").clicked() {
+                    if ui
+                        .add_sized([btn_col_w, 22.0], egui::Button::new("Browse..."))
+                        .clicked()
+                    {
                         if let Some(p) = rfd::FileDialog::new().pick_folder() {
                             self.hq_dir = p.display().to_string();
                             self.match_folders();
@@ -839,12 +878,15 @@ impl eframe::App for AniMergerApp {
 
                     ui.label("Right Language Folder:");
                     if ui
-                        .add(egui::TextEdit::singleline(&mut self.lang_dir).desired_width(520.0))
+                        .add(egui::TextEdit::singleline(&mut self.lang_dir).desired_width(field_w))
                         .lost_focus()
                     {
                         self.refresh_file_lists();
                     }
-                    if ui.button("Browse...").clicked() {
+                    if ui
+                        .add_sized([btn_col_w, 22.0], egui::Button::new("Browse..."))
+                        .clicked()
+                    {
                         if let Some(p) = rfd::FileDialog::new().pick_folder() {
                             self.lang_dir = p.display().to_string();
                             self.match_folders();
@@ -853,8 +895,11 @@ impl eframe::App for AniMergerApp {
                     ui.end_row();
 
                     ui.label("Output Folder:");
-                    ui.add(egui::TextEdit::singleline(&mut self.out_dir).desired_width(520.0));
-                    if ui.button("Browse...").clicked() {
+                    ui.add(egui::TextEdit::singleline(&mut self.out_dir).desired_width(field_w));
+                    if ui
+                        .add_sized([btn_col_w, 22.0], egui::Button::new("Browse..."))
+                        .clicked()
+                    {
                         if let Some(p) = rfd::FileDialog::new().pick_folder() {
                             self.out_dir = p.display().to_string();
                         }
@@ -882,84 +927,123 @@ impl eframe::App for AniMergerApp {
                         if self.naming_mode == OutputNamingMode::CustomName {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.custom_output_name)
-                                    .desired_width(180.0)
+                                    .desired_width(120.0)
                                     .hint_text("MyAnime"),
                             );
                             ui.label("(_E01)");
                         }
                     });
+                    ui.label("");
                     ui.end_row();
 
                     ui.label("Global Sync Delay (ms):");
-                    let response = ui.add(
-                        egui::DragValue::new(&mut self.global_delay_ms)
-                            .speed(50)
-                            .suffix(" ms"),
-                    );
-                    if response.changed() {
-                        self.apply_global_delay();
-                    }
+                    ui.horizontal(|ui| {
+                        let response = ui.add(
+                            egui::DragValue::new(&mut self.global_delay_ms)
+                                .speed(50)
+                                .suffix(" ms"),
+                        );
+                        if response.changed() {
+                            self.apply_global_delay();
+                        }
+                        ui.add_space(16.0);
+                        ui.checkbox(
+                            &mut self.cfg.verify_integrity,
+                            "Verify integrity post-mux",
+                        );
+                        ui.add_space(8.0);
+                        ui.checkbox(
+                            &mut self.cfg.auto_sync_subs,
+                            "Auto-sync subtitles with Alass",
+                        );
+                    });
+                    ui.label("");
                     ui.end_row();
 
                     ui.label("mkvmerge Binary:");
-                    ui.add(egui::TextEdit::singleline(&mut self.mkvmerge_bin).desired_width(520.0));
-                    if ui.button("Auto-Match Folders").clicked() {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.mkvmerge_bin).desired_width(field_w),
+                    );
+                    if ui
+                        .add_sized([btn_col_w, 22.0], egui::Button::new("Auto-Match Folders"))
+                        .clicked()
+                    {
                         self.match_folders();
                     }
                     ui.end_row();
                 });
 
+            ui.add_space(4.0);
             ui.separator();
+            ui.add_space(2.0);
 
             ui.columns(2, |cols| {
                 cols[0].group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.strong("Keep from High Quality Folder (Source A)");
+                    ui.add_space(2.0);
                     ui.checkbox(&mut self.cfg.hq_video, "Video Tracks (Best Video)");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.cfg.hq_audio, "Audio Tracks — Lang filter:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.cfg.hq_audio_langs)
-                                .hint_text("blank = all languages")
-                                .desired_width(110.0),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.cfg.hq_subs, "Subtitles — Lang filter:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.cfg.hq_sub_langs)
-                                .hint_text("blank = all languages")
-                                .desired_width(110.0),
-                        );
-                    });
+
+                    egui::Grid::new("hq_tracks_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.checkbox(&mut self.cfg.hq_audio, "Audio — Lang filter:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.cfg.hq_audio_langs)
+                                    .hint_text("all")
+                                    .desired_width(90.0),
+                            );
+                            ui.end_row();
+
+                            ui.checkbox(&mut self.cfg.hq_subs, "Subtitles — Lang filter:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.cfg.hq_sub_langs)
+                                    .hint_text("all")
+                                    .desired_width(90.0),
+                            );
+                            ui.end_row();
+                        });
+
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.cfg.hq_chapters, "Chapters");
+                        ui.add_space(8.0);
                         ui.checkbox(&mut self.cfg.hq_attachments, "Fonts / Attachments");
                     });
                 });
 
                 cols[1].group(|ui| {
+                    ui.set_width(ui.available_width());
                     ui.strong("Keep from Right Language Folder (Source B)");
+                    ui.add_space(2.0);
                     ui.checkbox(&mut self.cfg.lang_video, "Video Tracks");
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.cfg.lang_audio, "Audio Tracks — Lang filter:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.cfg.lang_audio_langs)
-                                .hint_text("blank = all languages")
-                                .desired_width(110.0),
-                        );
-                        ui.checkbox(&mut self.cfg.lang_audio_default, "Default");
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.cfg.lang_subs, "Subtitles — Lang filter:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.cfg.lang_sub_langs)
-                                .hint_text("blank = all languages")
-                                .desired_width(110.0),
-                        );
-                        ui.checkbox(&mut self.cfg.lang_subs_default, "Default");
-                    });
+
+                    egui::Grid::new("lang_tracks_grid")
+                        .num_columns(3)
+                        .spacing([8.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.checkbox(&mut self.cfg.lang_audio, "Audio — Lang filter:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.cfg.lang_audio_langs)
+                                    .hint_text("all")
+                                    .desired_width(80.0),
+                            );
+                            ui.checkbox(&mut self.cfg.lang_audio_default, "Default");
+                            ui.end_row();
+
+                            ui.checkbox(&mut self.cfg.lang_subs, "Subtitles — Lang filter:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.cfg.lang_sub_langs)
+                                    .hint_text("all")
+                                    .desired_width(80.0),
+                            );
+                            ui.checkbox(&mut self.cfg.lang_subs_default, "Default");
+                            ui.end_row();
+                        });
+
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.cfg.lang_chapters, "Chapters");
+                        ui.add_space(8.0);
                         ui.checkbox(&mut self.cfg.lang_attachments, "Fonts / Attachments");
                     });
                 });
@@ -967,20 +1051,13 @@ impl eframe::App for AniMergerApp {
 
             ui.add_space(4.0);
 
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.cfg.verify_integrity, "Verify file integrity post-mux");
-                ui.add_space(16.0);
-                ui.checkbox(&mut self.cfg.auto_sync_subs, "Auto-sync subtitles with Alass");
-            });
-
-            ui.separator();
-
             let matched_hq: HashSet<PathBuf> =
                 self.pairs.iter().map(|p| p.hq_path.clone()).collect();
             let matched_lang: HashSet<PathBuf> =
                 self.pairs.iter().map(|p| p.lang_path.clone()).collect();
 
             ui.group(|ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.strong("Manual Match:");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -997,7 +1074,7 @@ impl eframe::App for AniMergerApp {
 
                         ui.add(
                             egui::TextEdit::singleline(&mut self.manual_ep_key)
-                                .desired_width(55.0)
+                                .desired_width(50.0)
                                 .hint_text("E01"),
                         );
                         ui.label("Ep Tag:");
@@ -1006,7 +1083,6 @@ impl eframe::App for AniMergerApp {
 
                 ui.add_space(4.0);
 
-                let combo_width = ((ui.available_width() - 24.0) / 2.0).max(160.0);
                 let mut hq_changed = false;
                 let mut lang_changed = false;
 
@@ -1026,13 +1102,13 @@ impl eframe::App for AniMergerApp {
                     .unwrap_or("Select Language File (Source B)...")
                     .to_string();
 
-                ui.horizontal(|ui| {
+                ui.columns(2, |cols| {
+                    let w0 = cols[0].available_width();
                     egui::ComboBox::from_id_source("manual_hq_combo")
-                        .width(combo_width)
+                        .width(w0)
                         .selected_text(&selected_hq_text)
                         .truncate()
-                        .show_ui(ui, |ui| {
-                            ui.set_min_width(combo_width);
+                        .show_ui(&mut cols[0], |ui| {
                             for path in &self.all_hq_files {
                                 let name = path
                                     .file_name()
@@ -1050,22 +1126,19 @@ impl eframe::App for AniMergerApp {
                                         Some(path.clone()),
                                         &label,
                                     )
-                                    .on_hover_text(name)
                                     .clicked()
                                 {
                                     hq_changed = true;
                                 }
                             }
-                        })
-                        .response
-                        .on_hover_text(&selected_hq_text);
+                        });
 
+                    let w1 = cols[1].available_width();
                     egui::ComboBox::from_id_source("manual_lang_combo")
-                        .width(combo_width)
+                        .width(w1)
                         .selected_text(&selected_lang_text)
                         .truncate()
-                        .show_ui(ui, |ui| {
-                            ui.set_min_width(combo_width);
+                        .show_ui(&mut cols[1], |ui| {
                             for path in &self.all_lang_files {
                                 let name = path
                                     .file_name()
@@ -1083,15 +1156,12 @@ impl eframe::App for AniMergerApp {
                                         Some(path.clone()),
                                         &label,
                                     )
-                                    .on_hover_text(name)
                                     .clicked()
                                 {
                                     lang_changed = true;
                                 }
                             }
-                        })
-                        .response
-                        .on_hover_text(&selected_lang_text);
+                        });
                 });
 
                 if hq_changed || lang_changed {
@@ -1099,10 +1169,11 @@ impl eframe::App for AniMergerApp {
                 }
             });
 
-            ui.add_space(4.0);
+            ui.add_space(6.0);
 
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.strong(format!("Matched Episodes ({})", self.pairs.len()));
+
                 if ui
                     .add_enabled(
                         !self.is_running && !self.pairs.is_empty(),
@@ -1119,7 +1190,7 @@ impl eframe::App for AniMergerApp {
                     if ui
                         .add_enabled(
                             !self.is_running && !self.pairs.is_empty(),
-                            egui::Button::new("Start Merge Batch"),
+                            egui::Button::new("▶ Start Merge Batch"),
                         )
                         .clicked()
                     {
@@ -1138,32 +1209,90 @@ impl eframe::App for AniMergerApp {
                 ui.add_space(2.0);
             }
 
+            ui.add_space(2.0);
+
             let mut remove_idx: Option<usize> = None;
+            let available_table_height = ui.available_height().max(120.0);
 
-            egui::ScrollArea::vertical()
-                .id_source("pairs_scroll")
-                .max_height(175.0)
-                .show(ui, |ui| {
-                    egui::Grid::new("pairs_grid")
-                        .striped(true)
-                        .num_columns(7)
-                        .spacing([12.0, 6.0])
-                        .show(ui, |ui| {
-                            ui.strong("Use");
-                            ui.strong("Ep");
-                            ui.strong("High Quality File (Source A)");
-                            ui.strong("Language File (Source B)");
-                            ui.strong("Sync (ms)");
-                            ui.strong("Status");
-                            ui.strong("Action");
-                            ui.end_row();
+            // --- CALCUL DES LARGEURS GARANTISSANT LA VISIBILITÉ DES COLONNES FIXES ---
+            // Largeurs fixes : Use (36) + Ep (52) + Sync (85) + Status (75) + Action (75) = 323.0 px
+            // On ajoute ~75 px de marge pour les espacements inter-colonnes et la barre de scroll
+            let reserved_fixed_w = 323.0 + 75.0;
+            let flex_w = (ui.available_width() - reserved_fixed_w).max(200.0);
 
-                            for (idx, pair) in self.pairs.iter_mut().enumerate() {
+            // Répartition dynamique de l'espace restant entre Source A et Source B
+            let hq_w = (flex_w * self.hq_col_ratio).clamp(90.0, flex_w - 90.0);
+            let lang_w = (flex_w - hq_w).max(90.0);
+
+            let mut ratio_delta: f32 = 0.0;
+
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(false) // On gère le redimensionnement par transfert direct entre A et B
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .min_scrolled_height(available_table_height)
+                .max_scroll_height(available_table_height)
+                .column(Column::exact(36.0)) // Use (Toujours visible)
+                .column(Column::exact(52.0)) // Ep (Toujours visible)
+                .column(Column::exact(hq_w).clip(true)) // Source A (Flexible)
+                .column(Column::exact(lang_w).clip(true)) // Source B (Flexible : récupère ou donne la taille à A)
+                .column(Column::exact(85.0)) // Sync (ms) (Toujours visible)
+                .column(Column::exact(75.0)) // Status (Toujours visible)
+                .column(Column::exact(75.0)) // Action / Unmatch (Toujours visible)
+                .header(24.0, |mut header| {
+                    header.col(|ui| {
+                        ui.strong("Use");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Ep");
+                    });
+                    header.col(|ui| {
+                        // En-tête Source A avec poignée de redimensionnement type Excel à sa droite
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Label::new(egui::RichText::new("High Quality File (Source A)").strong()).truncate());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(10.0, 20.0), egui::Sense::drag());
+                                let color = if resp.hovered() || resp.dragged() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                                    ui.visuals().widgets.active.fg_stroke.color
+                                } else {
+                                    ui.visuals().widgets.noninteractive.bg_stroke.color
+                                };
+                                ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(2.0, color));
+                                if resp.dragged() {
+                                    ratio_delta = resp.drag_delta().x / flex_w;
+                                }
+                                resp.on_hover_text("Glisser pour ajuster la largeur entre Source A et Source B");
+                            });
+                        });
+                    });
+                    header.col(|ui| {
+                        ui.add(egui::Label::new(egui::RichText::new("Language File (Source B)").strong()).truncate());
+                    });
+                    header.col(|ui| {
+                        ui.strong("Sync (ms)");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Status");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Action");
+                    });
+                })
+                .body(|mut body| {
+                    for (idx, pair) in self.pairs.iter_mut().enumerate() {
+                        body.row(26.0, |mut row| {
+                            row.col(|ui| {
                                 ui.checkbox(&mut pair.enabled, "");
+                            });
+                            row.col(|ui| {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut pair.ep_key)
-                                        .desired_width(45.0),
+                                        .desired_width(42.0),
                                 );
+                            });
+                            row.col(|ui| {
                                 let hq_name = pair
                                     .hq_path
                                     .file_name()
@@ -1171,7 +1300,8 @@ impl eframe::App for AniMergerApp {
                                     .unwrap_or("");
                                 ui.add(egui::Label::new(hq_name).truncate())
                                     .on_hover_text(hq_name);
-
+                            });
+                            row.col(|ui| {
                                 let lang_name = pair
                                     .lang_path
                                     .file_name()
@@ -1179,23 +1309,32 @@ impl eframe::App for AniMergerApp {
                                     .unwrap_or("");
                                 ui.add(egui::Label::new(lang_name).truncate())
                                     .on_hover_text(lang_name);
-
+                            });
+                            row.col(|ui| {
                                 ui.add(
                                     egui::DragValue::new(&mut pair.delay_ms)
                                         .speed(50)
                                         .suffix(" ms"),
                                 );
+                            });
+                            row.col(|ui| {
                                 ui.label(&pair.status);
+                            });
+                            row.col(|ui| {
                                 if ui
                                     .add_enabled(!self.is_running, egui::Button::new("Unmatch"))
                                     .clicked()
                                 {
                                     remove_idx = Some(idx);
                                 }
-                                ui.end_row();
-                            }
+                            });
                         });
+                    }
                 });
+
+            if ratio_delta != 0.0 {
+                self.hq_col_ratio = (self.hq_col_ratio + ratio_delta).clamp(0.15, 0.85);
+            }
 
             if let Some(idx) = remove_idx {
                 let removed = self.pairs.remove(idx);
@@ -1215,19 +1354,6 @@ impl eframe::App for AniMergerApp {
                 ));
                 self.update_default_manual_selection();
             }
-
-            ui.separator();
-
-            ui.strong("mkvmerge Output Log");
-            egui::ScrollArea::vertical()
-                .id_source("logs_scroll")
-                .stick_to_bottom(true)
-                .max_height(100.0)
-                .show(ui, |ui| {
-                    for line in &self.logs {
-                        ui.monospace(line);
-                    }
-                });
         });
     }
 }
@@ -1235,8 +1361,8 @@ impl eframe::App for AniMergerApp {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1080.0, 760.0])
-            .with_min_inner_size([900.0, 640.0])
+            .with_inner_size([1150.0, 780.0])
+            .with_min_inner_size([920.0, 620.0])
             .with_icon(load_icon()),
         ..Default::default()
     };
