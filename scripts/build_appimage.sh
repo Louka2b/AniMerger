@@ -43,10 +43,27 @@ if [ -f "assets/animerger.png" ]; then
     cp "assets/animerger.png" "$APPDIR/animerger.png"
 fi
 
-if [ ! -f "appimagetool-x86_64.AppImage" ]; then
-    wget -q https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
-    chmod +x appimagetool-x86_64.AppImage
+cat << 'EOF' > "$APPDIR/AppRun"
+#!/usr/bin/env bash
+HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+exec "$HERE/usr/bin/animerger" "$@"
+EOF
+chmod +x "$APPDIR/AppRun"
+
+APPIMAGETOOL="appimagetool-x86_64.AppImage"
+if [ ! -f "$APPIMAGETOOL" ]; then
+    echo "Downloading the latest appimagetool..."
+    appimagetool_url="$(curl --fail --silent --show-error https://api.github.com/repos/AppImage/appimagetool/releases/latest |
+        grep -F '"browser_download_url"' |
+        grep -F '/appimagetool-x86_64.AppImage"' |
+        cut -d '"' -f 4)"
+    if [ -z "$appimagetool_url" ]; then
+        echo "Error: appimagetool Linux x86_64 asset was not found." >&2
+        exit 1
+    fi
+    curl --fail --location --retry 3 --retry-delay 2 --output "$APPIMAGETOOL" "$appimagetool_url"
+    chmod +x "$APPIMAGETOOL"
 fi
 
-ARCH=x86_64 ./appimagetool-x86_64.AppImage "$APPDIR" "$DIST_DIR/AniMerger-x86_64.AppImage"
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./$APPIMAGETOOL "$APPDIR" "$DIST_DIR/AniMerger-x86_64.AppImage"
 echo "Linux AppImage created successfully in dist/"

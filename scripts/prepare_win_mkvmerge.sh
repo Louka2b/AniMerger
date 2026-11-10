@@ -23,13 +23,20 @@ if [ ! -f "${OUT_ALASS}" ]; then
     fi
     echo "Téléchargement d'Alass pour Windows..."
     curl --fail --location --retry 3 --retry-delay 2 -o "${ALASS_ARCHIVE}" "${ALASS_URL}"
-    unzip -j -o "${ALASS_ARCHIVE}" '*/alass.exe' -d build/win >/dev/null
+    unzip -p "${ALASS_ARCHIVE}" '*/bin/alass-cli.exe' > "${OUT_ALASS}"
+    if [ ! -s "${OUT_ALASS}" ]; then
+        echo "Erreur : alass-cli.exe est introuvable dans l'archive Alass."
+        rm -f "${OUT_ALASS}"
+        exit 1
+    fi
+    chmod +x "${OUT_ALASS}"
     rm -f "${ALASS_ARCHIVE}"
 fi
 
 SEVENZIP=$(command -v 7z || command -v 7za || true)
-if [ -z "${SEVENZIP}" ]; then
-    echo "Erreur : 7z est requis. Installe-le avec : sudo dnf install -y p7zip p7zip-plugins"
+BSDTAR=$(command -v bsdtar || true)
+if [ -z "${SEVENZIP}" ] && [ -z "${BSDTAR}" ]; then
+    echo "Erreur : 7z ou bsdtar est requis pour extraire MKVToolNix."
     exit 1
 fi
 
@@ -42,7 +49,15 @@ echo "Téléchargement de MKVToolNix ${VERSION} pour Windows..."
 curl -fL -o "${ARCHIVE}" "${URL}"
 
 echo "Extraction de mkvmerge.exe..."
-"${SEVENZIP}" e -y "${ARCHIVE}" "mkvtoolnix/mkvmerge.exe" -obuild/win/ >/dev/null
+if [ -n "${SEVENZIP}" ]; then
+    "${SEVENZIP}" e -y "${ARCHIVE}" "mkvtoolnix/mkvmerge.exe" -obuild/win/ >/dev/null
+else
+    "${BSDTAR}" -xOf "${ARCHIVE}" "mkvtoolnix/mkvmerge.exe" > "${OUT_EXE}"
+fi
+if [ ! -s "${OUT_EXE}" ]; then
+    echo "Erreur : mkvmerge.exe est introuvable dans l'archive MKVToolNix."
+    exit 1
+fi
 rm -f "${ARCHIVE}"
 
 echo "mkvmerge.exe prêt dans ${OUT_EXE}"

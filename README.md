@@ -69,7 +69,7 @@ All platforms require:
 
 Additional tools are needed only for some packaging targets:
 
-- Linux AppImage: `wget` is used to download `appimagetool`; Alass is downloaded
+- Linux AppImage: `curl` is used to download `appimagetool`; Alass is downloaded
   automatically and `mkvmerge` must be installed or copied to
   `build/linux/mkvmerge`.
 - Windows: MinGW, `unzip`, `7z` or `7za`, and the
@@ -85,14 +85,14 @@ Additional tools are needed only for some packaging targets:
 sudo dnf install -y rust cargo make mkvtoolnix p7zip p7zip-plugins
 ```
 
-For the AppImage and Windows targets, also install `curl`, `wget`, and
+For the AppImage and Windows targets, also install `curl` and
 `unzip` if they are not already available.
 
 ### Debian, Ubuntu, or Mint
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential curl wget unzip mkvtoolnix p7zip-full \
+sudo apt install -y build-essential curl unzip mkvtoolnix p7zip-full \
   libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
   libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
 ```
