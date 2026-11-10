@@ -1259,7 +1259,7 @@ impl eframe::App for AniMergerApp {
                                 } else {
                                     ui.visuals().widgets.noninteractive.bg_stroke.color
                                 };
-                                ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(2.0, color));
+                                ui.painter().vline(rect.center().x, rect.y_range(), egui::Stroke::new(2.0_f32, color));
                                 if resp.dragged() {
                                     ratio_delta = resp.drag_delta().x / flex_w;
                                 }
