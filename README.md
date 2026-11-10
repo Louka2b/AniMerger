@@ -115,12 +115,13 @@ before rebuilding.
 | `make windows` | Downloads Alass and MKVToolNix, then builds `target/x86_64-pc-windows-gnu/release/animerger.exe`. |
 | `make macos` | Builds `dist/AniMerger.app`. |
 | `make all` | Builds the macOS app, Linux AppImage, and Windows executable. |
-| `make clean` | Removes Cargo build files, packaging files, and `dist/`. |
+| `make clean` | Removes Cargo build files, downloaded build dependencies, packaging files, and `dist/`. |
 
 The Windows build embeds `mkvmerge.exe` and Alass in the executable. The Linux
 AppImage bundles `mkvmerge` and Alass. A macOS app bundle embeds `mkvmerge` and
 Alass when they are found on the build machine; otherwise, install them and
-rebuild. The build scripts may leave downloaded dependency files in `build/`.
+rebuild. The build scripts may leave downloaded dependency files in `build/`;
+these files, along with all other build outputs, are ignored by Git.
 
 ### Windows cross-compilation
 
@@ -153,6 +154,7 @@ animerger/
 ├── Cargo.toml
 ├── Makefile
 ├── README.md
+├── .gitignore
 ├── assets/
 │   └── animerger.png
 ├── scripts/
